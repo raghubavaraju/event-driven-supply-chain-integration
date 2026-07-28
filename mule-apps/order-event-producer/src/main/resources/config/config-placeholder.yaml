@@ -1,0 +1,15 @@
+# STATUS: Configuration placeholder — no real values. Never commit real credentials.
+
+env: "${mule.env}"
+
+kafka:
+  bootstrap.servers: "kafka-fictional-broker-1.internal.example.com:9092,kafka-fictional-broker-2.internal.example.com:9092"
+  security.protocol: "SASL_SSL"
+  sasl.mechanism: "PLAIN"
+  sasl.username: "${secure::kafka.sasl.username}"   # placeholder
+  sasl.password: "${secure::kafka.sasl.password}"   # placeholder
+  topics:
+    orderCreated: "order.created.v1"
+
+http:
+  listener.port: "${http.port}"   # internal trigger endpoint, called by order-process-api post-commit

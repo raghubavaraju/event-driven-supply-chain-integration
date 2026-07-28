@@ -1,0 +1,69 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- STATUS: Working example flow (illustrative Mule 4 XML, valid syntax; fictional broker). -->
+<mule xmlns="http://www.mulesoft.org/schema/mule/core"
+      xmlns:http="http://www.mulesoft.org/schema/mule/http"
+      xmlns:kafka="http://www.mulesoft.org/schema/mule/kafka"
+      xmlns:ee="http://www.mulesoft.org/schema/mule/ee/core"
+      xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+      xsi:schemaLocation="
+        http://www.mulesoft.org/schema/mule/core http://www.mulesoft.org/schema/mule/core/current/mule.xsd
+        http://www.mulesoft.org/schema/mule/http http://www.mulesoft.org/schema/mule/http/current/mule-http.xsd
+        http://www.mulesoft.org/schema/mule/kafka http://www.mulesoft.org/schema/mule/kafka/current/mule-kafka.xsd
+        http://www.mulesoft.org/schema/mule/ee/core http://www.mulesoft.org/schema/mule/ee/core/current/mule-ee.xsd">
+
+    <http:listener-config name="order-event-producer-httpListenerConfig">
+        <http:listener-connection host="0.0.0.0" port="${http.listener.port}"/>
+    </http:listener-config>
+
+    <kafka:producer-config name="kafka-producer-config">
+        <kafka:producer-configuration-type>
+            <kafka:producer-properties>
+                <kafka:producer-property key="bootstrap.servers" value="${kafka.bootstrap.servers}"/>
+                <kafka:producer-property key="security.protocol" value="${kafka.security.protocol}"/>
+                <kafka:producer-property key="acks" value="all"/>
+                <!-- acks=all: producer waits for full ISR acknowledgment, favoring durability
+                     over latency — appropriate here since a lost OrderCreated event would
+                     silently break the entire downstream supply chain flow. -->
+            </kafka:producer-properties>
+        </kafka:producer-configuration-type>
+    </kafka:producer-config>
+
+    <!--
+        Triggered internally by the companion project's Order Process API immediately
+        after a successful order creation + archive write. Modeled as an HTTP call here
+        for portability across environments; a direct in-process call or a transactional
+        outbox pattern are both valid alternatives depending on deployment topology.
+    -->
+    <flow name="publish-order-created">
+        <http:listener config-ref="order-event-producer-httpListenerConfig" path="/internal/order-created"/>
+        <ee:transform doc:name="Capture correlation ID">
+            <ee:variables>
+                <ee:set-variable variableName="correlationId">
+                    <![CDATA[%dw 2.0
+output text/plain
+---
+attributes.headers['X-Correlation-Id'] default uuid()]]>
+                </ee:set-variable>
+            </ee:variables>
+        </ee:transform>
+        <ee:transform doc:name="Map to OrderCreated event">
+            <ee:message>
+                <ee:set-payload resource="dwl/order-created-event.dwl"/>
+            </ee:message>
+        </ee:transform>
+        <ee:transform doc:name="Derive Kafka partition key (orderId, per ADR-002)">
+            <ee:variables>
+                <ee:set-variable variableName="partitionKey"><![CDATA[%dw 2.0
+output text/plain
+---
+payload.orderId]]></ee:set-variable>
+            </ee:variables>
+        </ee:transform>
+        <kafka:publish config-ref="kafka-producer-config" topic="${kafka.topics.orderCreated}" key="#[vars.partitionKey]">
+            <kafka:message><![CDATA[#[write(payload, 'application/json')]]]></kafka:message>
+        </kafka:publish>
+        <logger level="INFO" message="Published OrderCreated eventId=#[payload.eventId] orderId=#[payload.orderId] correlationId=#[vars.correlationId]"/>
+        <set-payload value='#[{"status": "published", "eventId": payload.eventId}]' mimeType="application/json"/>
+    </flow>
+
+</mule>

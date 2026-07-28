@@ -1,0 +1,124 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- STATUS: Working example flow (illustrative Mule 4 XML, valid syntax; fictional broker/DB). -->
+<mule xmlns="http://www.mulesoft.org/schema/mule/core"
+      xmlns:kafka="http://www.mulesoft.org/schema/mule/kafka"
+      xmlns:db="http://www.mulesoft.org/schema/mule/db"
+      xmlns:os="http://www.mulesoft.org/schema/mule/os"
+      xmlns:ee="http://www.mulesoft.org/schema/mule/ee/core"
+      xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+      xsi:schemaLocation="
+        http://www.mulesoft.org/schema/mule/core http://www.mulesoft.org/schema/mule/core/current/mule.xsd
+        http://www.mulesoft.org/schema/mule/kafka http://www.mulesoft.org/schema/mule/kafka/current/mule-kafka.xsd
+        http://www.mulesoft.org/schema/mule/db http://www.mulesoft.org/schema/mule/db/current/mule-db.xsd
+        http://www.mulesoft.org/schema/mule/os http://www.mulesoft.org/schema/mule/os/current/mule-os.xsd
+        http://www.mulesoft.org/schema/mule/ee/core http://www.mulesoft.org/schema/mule/ee/core/current/mule-ee.xsd">
+
+    <import file="../../../common/dlq-error-handler.xml"/>
+
+    <kafka:consumer-config name="kafka-consumer-config">
+        <kafka:consumer-configuration-type>
+            <kafka:consumer-properties>
+                <kafka:consumer-property key="bootstrap.servers" value="${kafka.bootstrap.servers}"/>
+                <kafka:consumer-property key="security.protocol" value="${kafka.security.protocol}"/>
+                <kafka:consumer-property key="group.id" value="${kafka.consumerGroupId}"/>
+                <kafka:consumer-property key="enable.auto.commit" value="false"/>
+                <!-- Manual commit: offset is committed only after successful processing
+                     + downstream publish, per docs/event-flow-and-design.md step 5. -->
+            </kafka:consumer-properties>
+        </kafka:consumer-configuration-type>
+    </kafka:consumer-config>
+
+    <kafka:producer-config name="kafka-producer-config">
+        <kafka:producer-configuration-type>
+            <kafka:producer-properties>
+                <kafka:producer-property key="bootstrap.servers" value="${kafka.bootstrap.servers}"/>
+                <kafka:producer-property key="acks" value="all"/>
+            </kafka:producer-properties>
+        </kafka:producer-configuration-type>
+    </kafka:producer-config>
+
+    <db:config name="inventory-db-config">
+        <db:generic-connection url="jdbc:postgresql://${inventoryDb.host}:${inventoryDb.port}/${inventoryDb.database}"
+                                user="${inventoryDb.user}" password="${inventoryDb.password}"/>
+    </db:config>
+
+    <os:object-store name="processedEventsStore" persistent="true" entryTtl="${idempotency.ttl.days}" entryTtlUnit="DAYS"/>
+
+    <flow name="consume-order-created">
+        <kafka:message-listener config-ref="kafka-consumer-config" topic="${kafka.topics.orderCreated}"/>
+
+        <ee:transform doc:name="Parse event and capture Kafka metadata">
+            <ee:variables>
+                <ee:set-variable variableName="orderCreatedEvent"><![CDATA[%dw 2.0
+output application/json
+---
+read(payload, "application/json")]]></ee:set-variable>
+                <ee:set-variable variableName="correlationId"><![CDATA[%dw 2.0
+output text/plain
+---
+(read(payload, "application/json")).correlationId]]></ee:set-variable>
+                <ee:set-variable variableName="originalTopic">${kafka.topics.orderCreated}</ee:set-variable>
+                <ee:set-variable variableName="originalPartition"><![CDATA[%dw 2.0
+output text/plain
+---
+attributes.partition as String]]></ee:set-variable>
+                <ee:set-variable variableName="originalOffset"><![CDATA[%dw 2.0
+output text/plain
+---
+attributes.offset as String]]></ee:set-variable>
+                <ee:set-variable variableName="dlqTopic">${kafka.topics.orderCreatedDlq}</ee:set-variable>
+                <ee:set-variable variableName="consumerApplicationName">inventory-event-consumer</ee:set-variable>
+            </ee:variables>
+        </ee:transform>
+
+        <!-- Idempotency check — see docs/idempotency-and-deduplication.md -->
+        <os:contains key="#[vars.orderCreatedEvent.eventId]" objectStore="processedEventsStore" target="alreadyProcessed"/>
+        <choice>
+            <when expression="#[vars.alreadyProcessed]">
+                <logger level="INFO" message="Duplicate OrderCreated eventId=#[vars.orderCreatedEvent.eventId], skipping (already processed)."/>
+            </when>
+            <otherwise>
+                <until-successful maxRetries="${retry.max}" millisBetweenRetries="${retry.backoff.ms}">
+                    <db:bulk-update config-ref="inventory-db-config" doc:name="Decrement stock per line item">
+                        <db:sql><![CDATA[UPDATE inventory SET available_quantity = available_quantity - :quantity
+WHERE sku = :sku RETURNING sku, available_quantity]]></db:sql>
+                        <db:input-parameters><![CDATA[#[vars.orderCreatedEvent.lineItems map (li) -> {sku: li.sku, quantity: li.quantity}]]]></db:input-parameters>
+                    </db:bulk-update>
+                </until-successful>
+
+                <ee:transform doc:name="Store stock results">
+                    <ee:variables>
+                        <ee:set-variable variableName="stockResults"><![CDATA[%dw 2.0
+output application/json
+---
+payload]]></ee:set-variable>
+                    </ee:variables>
+                </ee:transform>
+
+                <ee:transform doc:name="Build InventoryUpdated events (one per line item)">
+                    <ee:message>
+                        <ee:set-payload resource="dwl/order-created-to-inventory-updated.dwl"/>
+                    </ee:message>
+                </ee:transform>
+
+                <foreach>
+                    <kafka:publish config-ref="kafka-producer-config" topic="${kafka.topics.inventoryUpdated}" key="#[payload.sku]">
+                        <kafka:message><![CDATA[#[write(payload, 'application/json')]]]></kafka:message>
+                    </kafka:publish>
+                </foreach>
+
+                <os:store key="#[vars.orderCreatedEvent.eventId]" objectStore="processedEventsStore">
+                    <os:value><![CDATA[#[true]]]></os:value>
+                </os:store>
+
+                <logger level="INFO" message="Processed OrderCreated eventId=#[vars.orderCreatedEvent.eventId], published InventoryUpdated for #[sizeOf(vars.orderCreatedEvent.lineItems)] line item(s). correlationId=#[vars.correlationId]"/>
+            </otherwise>
+        </choice>
+
+        <!-- Manual offset commit after success (auto-commit disabled above). -->
+        <kafka:commit config-ref="kafka-consumer-config"/>
+
+        <error-handler ref="dlq-error-handler"/>
+    </flow>
+
+</mule>

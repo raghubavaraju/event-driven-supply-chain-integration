@@ -1,0 +1,20 @@
+{
+  "originalTopic": "order.created.v1",
+  "originalPartition": 3,
+  "originalOffset": 108422,
+  "eventId": "9a1c2e3f-77b1-4a2e-9c31-2f0a1e6b7d90",
+  "correlationId": "6f2b1a3e-2c31-4e9a-9a2d-1a7b6f8e2b10",
+  "failureReason": "SCHEMA_VALIDATION_FAILED",
+  "failureDetail": "Missing required field: lineItems",
+  "consumerApplication": "inventory-event-consumer",
+  "failedAt": "2026-07-28T10:20:11.004Z",
+  "originalPayload": {
+    "eventId": "9a1c2e3f-77b1-4a2e-9c31-2f0a1e6b7d90",
+    "eventType": "OrderCreated",
+    "schemaVersion": "1.0",
+    "correlationId": "6f2b1a3e-2c31-4e9a-9a2d-1a7b6f8e2b10",
+    "occurredAt": "2026-07-28T10:16:02.118Z",
+    "orderId": "ORD-100301",
+    "customerId": "CUST-88213"
+  }
+}

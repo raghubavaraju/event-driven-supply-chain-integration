@@ -1,0 +1,138 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- STATUS: Working example flow (illustrative Mule 4 XML, valid syntax; fictional backends). -->
+<mule xmlns="http://www.mulesoft.org/schema/mule/core"
+      xmlns:kafka="http://www.mulesoft.org/schema/mule/kafka"
+      xmlns:http="http://www.mulesoft.org/schema/mule/http"
+      xmlns:os="http://www.mulesoft.org/schema/mule/os"
+      xmlns:ee="http://www.mulesoft.org/schema/mule/ee/core"
+      xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+      xsi:schemaLocation="
+        http://www.mulesoft.org/schema/mule/core http://www.mulesoft.org/schema/mule/core/current/mule.xsd
+        http://www.mulesoft.org/schema/mule/kafka http://www.mulesoft.org/schema/mule/kafka/current/mule-kafka.xsd
+        http://www.mulesoft.org/schema/mule/http http://www.mulesoft.org/schema/mule/http/current/mule-http.xsd
+        http://www.mulesoft.org/schema/mule/os http://www.mulesoft.org/schema/mule/os/current/mule-os.xsd
+        http://www.mulesoft.org/schema/mule/ee/core http://www.mulesoft.org/schema/mule/ee/core/current/mule-ee.xsd">
+
+    <import file="../../../common/dlq-error-handler.xml"/>
+
+    <kafka:consumer-config name="kafka-consumer-config">
+        <kafka:consumer-configuration-type>
+            <kafka:consumer-properties>
+                <kafka:consumer-property key="bootstrap.servers" value="${kafka.bootstrap.servers}"/>
+                <kafka:consumer-property key="group.id" value="${kafka.consumerGroupId}"/>
+                <kafka:consumer-property key="enable.auto.commit" value="false"/>
+            </kafka:consumer-properties>
+        </kafka:consumer-configuration-type>
+    </kafka:consumer-config>
+
+    <kafka:producer-config name="kafka-producer-config">
+        <kafka:producer-configuration-type>
+            <kafka:producer-properties>
+                <kafka:producer-property key="bootstrap.servers" value="${kafka.bootstrap.servers}"/>
+                <kafka:producer-property key="acks" value="all"/>
+            </kafka:producer-properties>
+        </kafka:producer-configuration-type>
+    </kafka:producer-config>
+
+    <http:request-config name="warehouse-api-requestConfig">
+        <http:request-connection host="warehouse-mgmt.internal.example.com" protocol="HTTPS"/>
+    </http:request-config>
+
+    <os:object-store name="processedEventsStore" persistent="true" entryTtl="${idempotency.ttl.days}" entryTtlUnit="DAYS"/>
+
+    <flow name="consume-inventory-updated">
+        <kafka:message-listener config-ref="kafka-consumer-config" topic="${kafka.topics.inventoryUpdated}"/>
+
+        <ee:transform doc:name="Parse event and capture Kafka metadata">
+            <ee:variables>
+                <ee:set-variable variableName="inventoryUpdatedEvent"><![CDATA[%dw 2.0
+output application/json
+---
+read(payload, "application/json")]]></ee:set-variable>
+                <ee:set-variable variableName="correlationId"><![CDATA[%dw 2.0
+output text/plain
+---
+(read(payload, "application/json")).correlationId]]></ee:set-variable>
+                <ee:set-variable variableName="originalTopic">${kafka.topics.inventoryUpdated}</ee:set-variable>
+                <ee:set-variable variableName="originalPartition"><![CDATA[%dw 2.0
+output text/plain
+---
+attributes.partition as String]]></ee:set-variable>
+                <ee:set-variable variableName="originalOffset"><![CDATA[%dw 2.0
+output text/plain
+---
+attributes.offset as String]]></ee:set-variable>
+                <ee:set-variable variableName="dlqTopic">${kafka.topics.inventoryUpdatedDlq}</ee:set-variable>
+                <ee:set-variable variableName="consumerApplicationName">fulfillment-event-consumer</ee:set-variable>
+            </ee:variables>
+        </ee:transform>
+
+        <os:contains key="#[vars.inventoryUpdatedEvent.eventId]" objectStore="processedEventsStore" target="alreadyProcessed"/>
+        <choice>
+            <when expression="#[vars.alreadyProcessed]">
+                <logger level="INFO" message="Duplicate InventoryUpdated eventId=#[vars.inventoryUpdatedEvent.eventId], skipping."/>
+            </when>
+            <otherwise>
+                <until-successful maxRetries="${retry.max}" millisBetweenRetries="${retry.backoff.ms}">
+                    <http:request method="POST" config-ref="warehouse-api-requestConfig"
+                                  path="/dispatch" responseTimeout="${warehouseApi.timeout.ms}">
+                        <http:body><![CDATA[#[{orderId: vars.inventoryUpdatedEvent.orderId, sku: vars.inventoryUpdatedEvent.sku}]]]></http:body>
+                        <http:headers><![CDATA[#[{'X-Correlation-Id': vars.correlationId}]]]></http:headers>
+                    </http:request>
+                </until-successful>
+
+                <ee:transform doc:name="Map to ShipmentDispatched event">
+                    <ee:message>
+                        <ee:set-payload resource="dwl/inventory-updated-to-shipment-dispatched.dwl"/>
+                    </ee:message>
+                </ee:transform>
+
+                <ee:transform doc:name="Store ShipmentDispatched for FulfillmentCompleted step">
+                    <ee:variables>
+                        <ee:set-variable variableName="shipmentDispatchedEvent"><![CDATA[%dw 2.0
+output application/json
+---
+payload]]></ee:set-variable>
+                    </ee:variables>
+                </ee:transform>
+
+                <kafka:publish config-ref="kafka-producer-config" topic="${kafka.topics.shipmentDispatched}" key="#[vars.inventoryUpdatedEvent.orderId]">
+                    <kafka:message><![CDATA[#[write(payload, 'application/json')]]]></kafka:message>
+                </kafka:publish>
+
+                <ee:transform doc:name="Build FulfillmentCompleted event">
+                    <ee:message>
+                        <ee:set-payload><![CDATA[%dw 2.0
+output application/json
+---
+{
+    eventId: uuid(),
+    eventType: "FulfillmentCompleted",
+    schemaVersion: "1.0",
+    correlationId: vars.inventoryUpdatedEvent.correlationId,
+    occurredAt: now(),
+    orderId: vars.inventoryUpdatedEvent.orderId,
+    shipmentId: vars.shipmentDispatchedEvent.shipmentId,
+    completedAt: now()
+}]]></ee:set-payload>
+                    </ee:message>
+                </ee:transform>
+
+                <kafka:publish config-ref="kafka-producer-config" topic="${kafka.topics.fulfillmentCompleted}" key="#[vars.inventoryUpdatedEvent.orderId]">
+                    <kafka:message><![CDATA[#[write(payload, 'application/json')]]]></kafka:message>
+                </kafka:publish>
+
+                <os:store key="#[vars.inventoryUpdatedEvent.eventId]" objectStore="processedEventsStore">
+                    <os:value><![CDATA[#[true]]]></os:value>
+                </os:store>
+
+                <logger level="INFO" message="Fulfillment completed for orderId=#[vars.inventoryUpdatedEvent.orderId] correlationId=#[vars.correlationId]"/>
+            </otherwise>
+        </choice>
+
+        <kafka:commit config-ref="kafka-consumer-config"/>
+
+        <error-handler ref="dlq-error-handler"/>
+    </flow>
+
+</mule>

@@ -1,0 +1,19 @@
+{
+  "$comment": "STATUS: Working example — valid JSON Schema (draft 2020-12). Fictional event definition.",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "InventoryUpdated",
+  "type": "object",
+  "required": ["eventId", "eventType", "schemaVersion", "correlationId", "occurredAt", "sku", "orderId", "quantityDelta", "availableQuantity"],
+  "properties": {
+    "eventId": { "type": "string", "format": "uuid" },
+    "eventType": { "const": "InventoryUpdated" },
+    "schemaVersion": { "const": "1.0" },
+    "correlationId": { "type": "string", "format": "uuid" },
+    "occurredAt": { "type": "string", "format": "date-time" },
+    "sku": { "type": "string" },
+    "orderId": { "type": "string", "description": "The order that triggered this inventory change." },
+    "quantityDelta": { "type": "integer", "description": "Negative for a decrement." },
+    "availableQuantity": { "type": "integer", "minimum": 0 },
+    "replenishmentTriggered": { "type": "boolean", "default": false }
+  }
+}

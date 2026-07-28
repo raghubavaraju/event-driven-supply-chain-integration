@@ -1,0 +1,19 @@
+{
+  "$comment": "STATUS: Working example — valid JSON Schema (draft 2020-12). Fictional event definition.",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "ShipmentDispatched",
+  "type": "object",
+  "required": ["eventId", "eventType", "schemaVersion", "correlationId", "occurredAt", "orderId", "shipmentId", "carrier", "trackingNumber"],
+  "properties": {
+    "eventId": { "type": "string", "format": "uuid" },
+    "eventType": { "const": "ShipmentDispatched" },
+    "schemaVersion": { "const": "1.0" },
+    "correlationId": { "type": "string", "format": "uuid" },
+    "occurredAt": { "type": "string", "format": "date-time" },
+    "orderId": { "type": "string" },
+    "shipmentId": { "type": "string" },
+    "carrier": { "type": "string" },
+    "trackingNumber": { "type": "string" },
+    "estimatedDeliveryDate": { "type": "string", "format": "date" }
+  }
+}

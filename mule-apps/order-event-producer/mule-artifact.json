@@ -1,0 +1,11 @@
+{
+  "minMuleVersion": "4.6.0",
+  "name": "order-event-producer",
+  "requiredProduct": "MULE_EE",
+  "classLoaderModelLoaderDescriptor": {
+    "id": "mule",
+    "attributes": { "exportedPackages": [], "exportedResources": ["dwl", "config"] }
+  },
+  "configs": ["order-event-producer.xml"],
+  "secureProperties": ["kafka.sasl.password"]
+}

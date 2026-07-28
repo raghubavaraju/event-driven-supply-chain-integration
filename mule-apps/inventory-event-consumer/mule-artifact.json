@@ -1,0 +1,11 @@
+{
+  "minMuleVersion": "4.6.0",
+  "name": "inventory-event-consumer",
+  "requiredProduct": "MULE_EE",
+  "classLoaderModelLoaderDescriptor": {
+    "id": "mule",
+    "attributes": { "exportedPackages": [], "exportedResources": ["dwl", "config"] }
+  },
+  "configs": ["inventory-event-consumer.xml"],
+  "secureProperties": ["kafka.sasl.password", "inventory.db.password"]
+}

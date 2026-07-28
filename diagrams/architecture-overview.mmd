@@ -1,0 +1,30 @@
+%% Architecture documentation — Mermaid source
+%% Event-Driven Supply Chain Integration — producer/consumer topology
+flowchart TB
+    OPA["Order Process API<br/>(companion project)"] -->|publishes| T1["Topic: order.created.v1<br/>(partitioned by orderId)"]
+
+    T1 --> INV["Inventory Event Consumer<br/>(consumer)"]
+    INV -->|publishes| T2["Topic: inventory.updated.v1<br/>(partitioned by sku)"]
+    INV -.->|on failure, after retries| DLQ1["DLQ: order.created.v1.dlq"]
+
+    T2 --> FUL["Fulfillment Event Consumer<br/>(consumer + producer)"]
+    FUL -->|publishes| T3["Topic: shipment.dispatched.v1"]
+    FUL -->|publishes| T4["Topic: fulfillment.completed.v1"]
+    FUL -.->|on failure, after retries| DLQ2["DLQ: inventory.updated.v1.dlq"]
+
+    T3 --> NOTIF["Notification Event Consumer"]
+    T4 --> NOTIF
+    T1 --> ANALYTICS["Analytics / Reporting Consumer<br/>(independent, replay-capable)"]
+    T2 --> ANALYTICS
+    T3 --> ANALYTICS
+    T4 --> ANALYTICS
+
+    classDef topic fill:#0EA5E9,color:#fff,stroke:#333;
+    classDef consumer fill:#059669,color:#fff,stroke:#333;
+    classDef dlq fill:#DC2626,color:#fff,stroke:#333;
+    classDef producer fill:#4F46E5,color:#fff,stroke:#333;
+
+    class T1,T2,T3,T4 topic;
+    class INV,FUL,NOTIF,ANALYTICS consumer;
+    class DLQ1,DLQ2 dlq;
+    class OPA producer;

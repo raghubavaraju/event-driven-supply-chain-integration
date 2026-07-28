@@ -1,0 +1,29 @@
+# STATUS: Configuration placeholder — no real values. Never commit real credentials.
+
+env: "${mule.env}"
+
+kafka:
+  bootstrap.servers: "kafka-fictional-broker-1.internal.example.com:9092,kafka-fictional-broker-2.internal.example.com:9092"
+  security.protocol: "SASL_SSL"
+  sasl.username: "${secure::kafka.sasl.username}"
+  sasl.password: "${secure::kafka.sasl.password}"
+  consumerGroupId: "inventory-event-consumer-group"
+  topics:
+    orderCreated: "order.created.v1"
+    orderCreatedDlq: "order.created.v1.dlq"
+    inventoryUpdated: "inventory.updated.v1"
+
+inventoryDb:
+  host: "inventory-db.internal.example.com"
+  port: 5432
+  database: "inventory"
+  user: "inventory_consumer_svc"
+  password: "${secure::inventory.db.password}"   # placeholder
+
+idempotency:
+  objectStore.name: "inventoryProcessedEventsStore"
+  ttl.days: 7
+
+retry:
+  max: 3
+  backoff.ms: 500

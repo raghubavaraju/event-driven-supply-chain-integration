@@ -1,0 +1,96 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- STATUS: Working example — shared error handler pattern, imported by each consumer.
+     Classifies failures per docs/error-handling-dlq-and-recovery.md and routes
+     non-retryable failures to a topic-specific DLQ. -->
+<mule xmlns="http://www.mulesoft.org/schema/mule/core"
+      xmlns:kafka="http://www.mulesoft.org/schema/mule/kafka"
+      xmlns:ee="http://www.mulesoft.org/schema/mule/ee/core"
+      xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+      xsi:schemaLocation="
+        http://www.mulesoft.org/schema/mule/core http://www.mulesoft.org/schema/mule/core/current/mule.xsd
+        http://www.mulesoft.org/schema/mule/kafka http://www.mulesoft.org/schema/mule/kafka/current/mule-kafka.xsd
+        http://www.mulesoft.org/schema/mule/ee/core http://www.mulesoft.org/schema/mule/ee/core/current/mule-ee.xsd">
+
+    <!--
+        Usage per consumer flow:
+          <error-handler ref="dlq-error-handler"/>
+        Each consumer sets flow variables `dlqTopic`, `consumerApplicationName`, and
+        `originalTopic`/`originalPartition`/`originalOffset` before invoking this handler,
+        so the DLQ envelope (see docs/error-handling-dlq-and-recovery.md) can be built generically here.
+    -->
+    <error-handler name="dlq-error-handler">
+
+        <!-- Malformed/invalid payload: no retry, straight to DLQ. -->
+        <on-error-propagate type="VALIDATION:INVALID_SCHEMA, EXPR:MALFORMED_EXPRESSION" logException="true">
+            <ee:transform doc:name="Build DLQ envelope">
+                <ee:message>
+                    <ee:set-payload><![CDATA[%dw 2.0
+output application/json
+---
+{
+    originalTopic: vars.originalTopic,
+    originalPartition: vars.originalPartition,
+    originalOffset: vars.originalOffset,
+    eventId: payload.eventId default null,
+    correlationId: vars.correlationId,
+    failureReason: "SCHEMA_VALIDATION_FAILED",
+    failureDetail: error.description,
+    consumerApplication: vars.consumerApplicationName,
+    failedAt: now(),
+    originalPayload: payload
+}]]></ee:set-payload>
+                </ee:message>
+            </ee:transform>
+            <kafka:publish config-ref="kafka-producer-config" topic="#[vars.dlqTopic]"/>
+        </on-error-propagate>
+
+        <!-- Transient failure that exhausted its bounded retry: also goes to DLQ, distinct reason. -->
+        <on-error-propagate type="HTTP:TIMEOUT, HTTP:CONNECTIVITY, DB:CONNECTIVITY" logException="true">
+            <ee:transform doc:name="Build DLQ envelope">
+                <ee:message>
+                    <ee:set-payload><![CDATA[%dw 2.0
+output application/json
+---
+{
+    originalTopic: vars.originalTopic,
+    originalPartition: vars.originalPartition,
+    originalOffset: vars.originalOffset,
+    eventId: payload.eventId default null,
+    correlationId: vars.correlationId,
+    failureReason: "TRANSIENT_RETRY_EXHAUSTED",
+    failureDetail: error.description,
+    consumerApplication: vars.consumerApplicationName,
+    failedAt: now(),
+    originalPayload: payload
+}]]></ee:set-payload>
+                </ee:message>
+            </ee:transform>
+            <kafka:publish config-ref="kafka-producer-config" topic="#[vars.dlqTopic]"/>
+        </on-error-propagate>
+
+        <on-error-propagate type="ANY" logException="true">
+            <logger level="ERROR" message="Unhandled consumer error: #[error.description] correlationId=#[vars.correlationId default 'unknown']"/>
+            <ee:transform doc:name="Build DLQ envelope (generic)">
+                <ee:message>
+                    <ee:set-payload><![CDATA[%dw 2.0
+output application/json
+---
+{
+    originalTopic: vars.originalTopic default "unknown",
+    originalPartition: vars.originalPartition default -1,
+    originalOffset: vars.originalOffset default -1,
+    eventId: payload.eventId default null,
+    correlationId: vars.correlationId default null,
+    failureReason: "UNCLASSIFIED_ERROR",
+    failureDetail: error.description,
+    consumerApplication: vars.consumerApplicationName default "unknown",
+    failedAt: now(),
+    originalPayload: payload
+}]]></ee:set-payload>
+                </ee:message>
+            </ee:transform>
+            <kafka:publish config-ref="kafka-producer-config" topic="#[vars.dlqTopic default 'unclassified.dlq']"/>
+        </on-error-propagate>
+
+    </error-handler>
+</mule>
